@@ -1,10 +1,12 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"html/template"
 	"io/ioutil"
 	"net/http"
+	"regexp"
 )
 
 type Pagina struct {
@@ -12,15 +14,16 @@ type Pagina struct {
 	Cuerpo []byte
 }
 
+var plantillas = template.Must(template.ParseFiles("tmpl/edit.html", "tmpl/view.html", "tmpl/front.html"))
+var regex_ruta = regexp.MustCompile("^(/|(/(edit|save|view)/([a-zA-Z0-9]+)))$")
+var pagina_principal = "Principal"
+
 func main() {
-	//Creamos y guardamos una página para que el cliente la pida
-	pag1 := &Pagina{Titulo: "Ejemplo", Cuerpo: []byte(
-		"¡Hola personita! Este es el cuerpo de tu página.")}
-	pag1.guardar()
-	http.HandleFunc("/view/", manejadorMostrarPagina)
-	http.HandleFunc("/edit/", manejadorEditar)
-	http.HandleFunc("/save/", manejadorGuardar)
-	fmt.Println("El servidor se encuentra en ejecución.")
+	http.HandleFunc("/", llamarManejador(manejadorRaiz)) //Nuevo manejador
+	http.HandleFunc("/view/", llamarManejador(manejadorMostrar))
+	http.HandleFunc("/save/", llamarManejador(manejadorGuardar))
+	http.HandleFunc("/edit/", llamarManejador(manejadorEditar))
+
 	http.ListenAndServe(":8080", nil)
 }
 
@@ -30,7 +33,7 @@ func (p *Pagina) guardar() error {
 	return ioutil.WriteFile("./view/"+nombre, p.Cuerpo, 0600)
 }
 
-// Método para cargar página
+// Función para cargar página
 func cargarPagina(titulo string) (*Pagina, error) {
 	nombre_archivo := titulo + ".txt"
 	fmt.Println("El cliente ha pedido: " + nombre_archivo)
@@ -41,15 +44,45 @@ func cargarPagina(titulo string) (*Pagina, error) {
 	return &Pagina{Titulo: titulo, Cuerpo: cuerpo}, nil
 }
 
-// Carga las plantillas HTML
-func cargarPlantilla(w http.ResponseWriter, plantilla string, p *Pagina) {
-	t, _ := template.ParseFiles(plantilla + ".html")
-	t.Execute(w, p)
+// Función para validar ruta y regresar nombre de la página solicitada
+func dameTitulo(w http.ResponseWriter, r *http.Request) (string, error) {
+	peticion := regex_ruta.FindStringSubmatch(r.URL.Path)
+	if peticion == nil {
+		http.NotFound(w, r)
+		return "", errors.New("Ruta inválida")
+	}
+	return peticion[len(peticion)-1], nil
 }
 
-// Manejador de peticiones
-func manejadorMostrarPagina(w http.ResponseWriter, r *http.Request) {
-	titulo := r.URL.Path[len("/view/"):]
+// Función para cargar las plantillas HTML
+func cargarPlantilla(w http.ResponseWriter, nombre_plantilla string, pagina *Pagina) {
+	plantillas.ExecuteTemplate(w, nombre_plantilla+".html", pagina)
+}
+func llamarManejador(manejador func(http.ResponseWriter, *http.Request, string)) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		titulo, err := dameTitulo(w, r)
+		fmt.Println(titulo)
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		manejador(w, r, titulo)
+	}
+}
+
+// Manejador para mostrar página principal
+func manejadorRaiz(w http.ResponseWriter, r *http.Request, titulo string) {
+	p, err := cargarPagina(pagina_principal)
+	if err != nil {
+		http.Redirect(w, r, "edit/"+pagina_principal, http.StatusFound)
+		fmt.Println("Error")
+		return
+	}
+	cargarPlantilla(w, "front", p)
+}
+
+// Manejador para visualizar wikis
+func manejadorMostrar(w http.ResponseWriter, r *http.Request, titulo string) {
 	p, err := cargarPagina(titulo)
 	if err != nil {
 		http.Redirect(w, r, "/edit/"+titulo, http.StatusFound)
@@ -60,8 +93,7 @@ func manejadorMostrarPagina(w http.ResponseWriter, r *http.Request) {
 }
 
 // Manejador para editar wikis
-func manejadorEditar(w http.ResponseWriter, r *http.Request) {
-	titulo := r.URL.Path[len("/edit/"):]
+func manejadorEditar(w http.ResponseWriter, r *http.Request, titulo string) {
 	p, err := cargarPagina(titulo)
 	if err != nil {
 		p = &Pagina{Titulo: titulo}
@@ -70,8 +102,7 @@ func manejadorEditar(w http.ResponseWriter, r *http.Request) {
 }
 
 // Manejador para guardar wikis
-func manejadorGuardar(w http.ResponseWriter, r *http.Request) {
-	titulo := r.URL.Path[len("/save/"):]
+func manejadorGuardar(w http.ResponseWriter, r *http.Request, titulo string) {
 	cuerpo := r.FormValue("body")
 	p := &Pagina{Titulo: titulo, Cuerpo: []byte(cuerpo)}
 	fmt.Println("Guardando " + titulo + ".txt...")
